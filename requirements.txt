@@ -1,4 +1,6 @@
-Flask
-pandas
 python-binance
+pandas
+Flask
 python-telegram-bot[job-queue]
+pandas-ta
+tqdm
