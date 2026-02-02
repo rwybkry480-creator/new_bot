@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# ema_cross_bot_v1.py - (EMA Crossover Bot v1.0)
+# ema_cross_bot_v1.1.py - (EMA Crossover Bot v1.1 - Corrected Cross Logic)
 # -----------------------------------------------------------------------------
 
 import os
@@ -26,13 +26,13 @@ client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
 # --- خادم الويب ---
 @app.route('/')
 def health_check():
-    return "EMA Crossover Bot Service (v1.0) is Running!", 200
+    return "EMA Crossover Bot Service (v1.1) is Running!", 200
 def run_server():
-    port = int(os.environ.get("PORT", 10001)) # استخدام منفذ مختلف (10001)
+    port = int(os.environ.get("PORT", 10001))
     app.run(host='0.0.0.0', port=port)
 
-# --- دوال التحليل (استراتيجية تقاطع EMA) ---
-def get_binance_klines(symbol, interval='15m', limit=120): # طلب بيانات كافية لـ EMA(99)
+# --- دوال التحليل (استراتيجية تقاطع EMA المصححة) ---
+def get_binance_klines(symbol, interval='15m', limit=120):
     try:
         klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
         return klines
@@ -42,7 +42,6 @@ def get_binance_klines(symbol, interval='15m', limit=120): # طلب بيانات
 
 def analyze_symbol_ema_cross(df):
     try:
-        # حساب EMA 7 و EMA 99
         df.ta.ema(length=7, append=True)
         df.ta.ema(length=99, append=True)
 
@@ -51,31 +50,33 @@ def analyze_symbol_ema_cross(df):
         df.dropna(inplace=True)
         if len(df) < 2: return None, None
 
-        # --- استخدام دالة ta.cross لتحديد التقاطع ---
-        # .ta.cross ترجع 1 عند التقاطع الإيجابي، -1 عند التقاطع السلبي، 0 إذا لم يحدث شيء
-        cross_signal = df.ta.cross(df['EMA_7'], df['EMA_99'], append=True).iloc[-1]
+        # --- المنطق الصحيح للتقاطع (بدون استخدام .cross) ---
+        previous = df.iloc[-2] # الشمعة السابقة
+        current = df.iloc[-1]  # الشمعة الحالية
 
-        if cross_signal == 1:
-            return 'BUY', df.iloc[-1]
+        # إشارة الشراء (Golden Cross)
+        if current['EMA_7'] > current['EMA_99'] and previous['EMA_7'] < previous['EMA_99']:
+            return 'BUY', current
         
-        if cross_signal == -1:
-            return 'SELL', df.iloc[-1]
+        # إشارة البيع (Death Cross)
+        if current['EMA_7'] < current['EMA_99'] and previous['EMA_7'] > previous['EMA_99']:
+            return 'SELL', current
             
     except Exception as e:
-        logger.error(f"An unexpected error occurred during analysis: {e}")
+        # تغيير رسالة الخطأ لتكون أكثر تحديدًا
+        logger.error(f"Error in analyze_symbol_ema_cross for symbol: {e}")
     return None, None
 
-# --- وظائف البوت الرئيسية ---
+# --- بقية الكود يبقى كما هو ---
 async def scan_market(context: ContextTypes.DEFAULT_TYPE):
     job_name = "Manual Scan" if context.job.name.startswith("scan_") else "Scheduled Scan"
-    logger.info(f"--- Starting {job_name} (EMA Cross 15m) ---")
+    logger.info(f"--- Starting {job_name} (EMA Cross 15m - v1.1) ---")
     chat_id = context.job.data['chat_id']
     if job_name == "Manual Scan":
         await context.bot.send_message(chat_id=chat_id, text=f"⏳ جاري {job_name} للسوق (تقاطع EMA 7/99، فريم 15 دقيقة)...")
     
     try:
         all_tickers = client.get_ticker()
-        # فلتر السعر يبقى كما هو
         symbols_to_scan = [t['symbol'] for t in all_tickers if t['symbol'].endswith('USDT') and float(t.get('lastPrice', 0)) < 100]
         logger.info(f"Found {len(symbols_to_scan)} symbols under $100 to analyze.")
     except Exception as e:
@@ -115,16 +116,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_message.chat_id
     await update.message.reply_html(f"👋 أهلاً بك يا {user.mention_html()}!\n\n"
-                                    f"أنا بوت **EMA Crossover (v1.0)**.\n\n"
+                                    f"أنا بوت **EMA Crossover (v1.1)**.\n\n"
                                     f"أقوم بالبحث عن تقاطعات `EMA(7)` و `EMA(99)` على فريم **15 دقيقة**.\n"
                                     f"سيتم إجراء فحص تلقائي كل 15 دقيقة.")
     
-    # إزالة أي مهام قديمة بنفس الاسم لضمان عدم التكرار
     current_jobs = context.job_queue.get_jobs_by_name("scheduled_scan_ema")
     for job in current_jobs:
         job.schedule_removal()
         
-    # جدولة الفحص كل 15 دقيقة (900 ثانية)
     context.job_queue.run_repeating(scan_market, interval=900, first=10, data={'chat_id': chat_id}, name="scheduled_scan_ema")
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -141,13 +140,13 @@ def run_bot():
     job_data = {'chat_id': TELEGRAM_CHAT_ID}
     application.job_queue.run_repeating(scan_market, interval=900, first=10, data=job_data, name="scheduled_scan_ema")
     
-    logger.info("--- [EMA Crossover Bot v1.0] Bot is ready and running autonomously. ---")
+    logger.info("--- [EMA Crossover Bot v1.1] Bot is ready and running autonomously. ---")
     application.run_polling()
 
 if __name__ == "__main__":
-    logger.info("--- [EMA Crossover Bot v1.0] Starting Main Application ---")
+    logger.info("--- [EMA Crossover Bot v1.1] Starting Main Application ---")
     server_thread = Thread(target=run_server)
     server_thread.daemon = True
     server_thread.start()
-    logger.info("--- [EMA Crossover Bot v1.0] Web Server has been started. ---")
+    logger.info("--- [EMA Crossover Bot v1.1] Web Server has been started. ---")
     run_bot()
