@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# ema_cross_bot_v1.2.py - (EMA Crossover Bot v1.2 - Golden Cross Only)
+# ema_cross_bot_v1.3.py - (EMA Crossover Bot v1.3: The Confirmation Filter)
 # -----------------------------------------------------------------------------
 
 import os
@@ -26,12 +26,12 @@ client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
 # --- خادم الويب ---
 @app.route('/')
 def health_check():
-    return "EMA Crossover Bot Service (v1.2 - Golden Cross Only) is Running!", 200
+    return "EMA Crossover Bot Service (v1.3 - Confirmation Filter) is Running!", 200
 def run_server():
     port = int(os.environ.get("PORT", 10001))
     app.run(host='0.0.0.0', port=port)
 
-# --- دوال التحليل (استراتيجية التقاطع الذهبي فقط) ---
+# --- دوال التحليل (مع فلتر التأكيد) ---
 def get_binance_klines(symbol, interval='15m', limit=120):
     try:
         klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
@@ -45,7 +45,7 @@ def analyze_symbol_ema_cross(df):
         df.ta.ema(length=7, append=True)
         df.ta.ema(length=99, append=True)
 
-        required_cols = ['EMA_7', 'EMA_99']
+        required_cols = ['EMA_7', 'EMA_99', 'close']
         if not all(col in df.columns for col in required_cols): return None, None
         df.dropna(inplace=True)
         if len(df) < 2: return None, None
@@ -53,25 +53,28 @@ def analyze_symbol_ema_cross(df):
         previous = df.iloc[-2]
         current = df.iloc[-1]
 
-        # إشارة الشراء (Golden Cross) - هذا هو الشرط الوحيد الذي سنهتم به
-        if current['EMA_7'] > current['EMA_99'] and previous['EMA_7'] < previous['EMA_99']:
+        # الشرط الأول: هل حدث تقاطع ذهبي؟
+        is_golden_cross = current['EMA_7'] > current['EMA_99'] and previous['EMA_7'] < previous['EMA_99']
+
+        # الشرط الثاني (الفلتر): هل السعر يؤكد التقاطع؟
+        is_price_confirmed = current['close'] > current['EMA_99']
+
+        # القرار النهائي: يجب أن يتحقق الشرطان معًا
+        if is_golden_cross and is_price_confirmed:
             return 'BUY', current
-        
-        # تم حذف منطق إشارة البيع بالكامل
             
     except Exception as e:
         logger.error(f"Error in analyze_symbol_ema_cross for symbol: {e}")
     
-    # في جميع الحالات الأخرى، لا نرجع أي إشارة
     return None, None
 
-# --- وظائف البوت الرئيسية (مع تعديل بسيط في الرسائل) ---
+# --- وظائف البوت الرئيسية ---
 async def scan_market(context: ContextTypes.DEFAULT_TYPE):
     job_name = "Manual Scan" if context.job.name.startswith("scan_") else "Scheduled Scan"
-    logger.info(f"--- Starting {job_name} (EMA Golden Cross 15m - v1.2) ---")
+    logger.info(f"--- Starting {job_name} (EMA Golden Cross 15m - v1.3) ---")
     chat_id = context.job.data['chat_id']
     if job_name == "Manual Scan":
-        await context.bot.send_message(chat_id=chat_id, text=f"⏳ جاري {job_name} للسوق (تقاطع EMA الذهبي فقط، فريم 15 دقيقة)...")
+        await context.bot.send_message(chat_id=chat_id, text=f"⏳ جاري {job_name} للسوق (تقاطع ذهبي مؤكد، فريم 15 دقيقة)...")
     
     try:
         all_tickers = client.get_ticker()
@@ -90,30 +93,29 @@ async def scan_market(context: ContextTypes.DEFAULT_TYPE):
         
         signal_type, signal_data = analyze_symbol_ema_cross(df)
         
-        if signal_type == 'BUY': # الآن نتحقق فقط من إشارات الشراء
+        if signal_type == 'BUY':
             found_signals += 1
             message = (f"📈 *[EMA 7/99 Golden Cross - 15m]*\n"
-                       f"إشارة **تقاطع ذهبي (شراء)**!\n\n"
+                       f"إشارة **تقاطع ذهبي مؤكد (شراء)**!\n\n"
                        f"• **العملة:** `{symbol}`\n"
                        f"• **السعر:** `{signal_data['close']:.5f}`\n\n"
                        f"• **السبب:**\n"
                        f"  - اخترق `EMA(7)` خط `EMA(99)`.\n"
-                       f"  - EMA(7): `{signal_data['EMA_7']:.5f}`\n"
-                       f"  - EMA(99): `{signal_data['EMA_99']:.5f}`")
+                       f"  - **والسعر أغلق فوق `EMA(99)` للتأكيد.**")
             await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown')
         await asyncio.sleep(0.1)
 
     logger.info(f"--- {job_name} complete. Found {found_signals} signals. ---")
     if job_name == "Manual Scan":
-        summary_message = f"✅ **اكتمل الفحص اليدوي.**\nتم تحليل {len(symbols_to_scan)} عملة. تم العثور على {found_signals} إشارة شراء."
+        summary_message = f"✅ **اكتمل الفحص اليدوي.**\nتم تحليل {len(symbols_to_scan)} عملة. تم العثور على {found_signals} إشارة شراء مؤكدة."
         await context.bot.send_message(chat_id=chat_id, text=summary_message)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_message.chat_id
     await update.message.reply_html(f"👋 أهلاً بك يا {user.mention_html()}!\n\n"
-                                    f"أنا بوت **EMA Crossover (v1.2 - Golden Cross Only)**.\n\n"
-                                    f"أقوم بالبحث عن **التقاطعات الذهبية (شراء فقط)** لفريم **15 دقيقة**.\n"
+                                    f"أنا بوت **EMA Crossover (v1.3 - The Confirmation Filter)**.\n\n"
+                                    f"أقوم بالبحث عن **التقاطعات الذهبية المؤكدة (شراء فقط)** لفريم **15 دقيقة**.\n"
                                     f"سيتم إجراء فحص تلقائي كل 15 دقيقة.")
     
     current_jobs = context.job_queue.get_jobs_by_name("scheduled_scan_ema")
@@ -136,13 +138,13 @@ def run_bot():
     job_data = {'chat_id': TELEGRAM_CHAT_ID}
     application.job_queue.run_repeating(scan_market, interval=900, first=10, data=job_data, name="scheduled_scan_ema")
     
-    logger.info("--- [EMA Crossover Bot v1.2] Bot is ready and running autonomously. ---")
+    logger.info("--- [EMA Crossover Bot v1.3] Bot is ready and running autonomously. ---")
     application.run_polling()
 
 if __name__ == "__main__":
-    logger.info("--- [EMA Crossover Bot v1.2] Starting Main Application ---")
+    logger.info("--- [EMA Crossover Bot v1.3] Starting Main Application ---")
     server_thread = Thread(target=run_server)
     server_thread.daemon = True
     server_thread.start()
-    logger.info("--- [EMA Crossover Bot v1.2] Web Server has been started. ---")
+    logger.info("--- [EMA Crossover Bot v1.3] Web Server has been started. ---")
     run_bot()
