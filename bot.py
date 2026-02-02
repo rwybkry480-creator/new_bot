@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# smc_bot_v14.2.py - (Falcon KDJ Sniper v14.2: Unfiltered & Aggressive)
+# ema_cross_bot_v1.py - (EMA Crossover Bot v1.0)
 # -----------------------------------------------------------------------------
 
 import os
@@ -26,13 +26,13 @@ client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
 # --- خادم الويب ---
 @app.route('/')
 def health_check():
-    return "Falcon KDJ Sniper Bot Service (v14.2 - Unfiltered) is Running!", 200
+    return "EMA Crossover Bot Service (v1.0) is Running!", 200
 def run_server():
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 10001)) # استخدام منفذ مختلف (10001)
     app.run(host='0.0.0.0', port=port)
 
-# --- دوال التحليل (معدلة بدون فلتر EMA 200) ---
-def get_binance_klines(symbol, interval='15m', limit=30): # لم نعد بحاجة لشموع كثيرة
+# --- دوال التحليل (استراتيجية تقاطع EMA) ---
+def get_binance_klines(symbol, interval='15m', limit=120): # طلب بيانات كافية لـ EMA(99)
     try:
         klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
         return klines
@@ -40,67 +40,72 @@ def get_binance_klines(symbol, interval='15m', limit=30): # لم نعد بحاج
         logger.error(f"Error fetching klines for {symbol}: {e}")
         return None
 
-def analyze_symbol_kdj(df):
+def analyze_symbol_ema_cross(df):
     try:
-        df.ta.kdj(append=True)
+        # حساب EMA 7 و EMA 99
+        df.ta.ema(length=7, append=True)
+        df.ta.ema(length=99, append=True)
 
-        required_cols = ['J_14_3_3', 'K_14_3_3', 'D_14_3_3']
-        if not all(col in df.columns for col in required_cols):
-            return None, None
-
+        required_cols = ['EMA_7', 'EMA_99']
+        if not all(col in df.columns for col in required_cols): return None, None
         df.dropna(inplace=True)
         if len(df) < 2: return None, None
-        previous, current = df.iloc[-2], df.iloc[-1]
+
+        # --- استخدام دالة ta.cross لتحديد التقاطع ---
+        # .ta.cross ترجع 1 عند التقاطع الإيجابي، -1 عند التقاطع السلبي، 0 إذا لم يحدث شيء
+        cross_signal = df.ta.cross(df['EMA_7'], df['EMA_99'], append=True).iloc[-1]
+
+        if cross_signal == 1:
+            return 'BUY', df.iloc[-1]
         
-        # --- الشرط الجديد والمبسط ---
-        j_was_below = previous['J_14_3_3'] < previous['K_14_3_3'] or previous['J_14_3_3'] < previous['D_14_3_3']
-        j_is_above = current['J_14_3_3'] > current['K_14_3_3'] and current['J_14_3_3'] > current['D_14_3_3']
-
-        if j_was_below and j_is_above:
-            return 'BUY', current
-            
-        j_was_above = previous['J_14_3_3'] > previous['K_14_3_3'] or previous['J_14_3_3'] > previous['D_14_3_3']
-        j_is_below = current['J_14_3_3'] < current['K_14_3_3'] and current['J_14_3_3'] < current['D_14_3_3']
-
-        if j_was_above and j_is_below:
-            return 'SELL', current
+        if cross_signal == -1:
+            return 'SELL', df.iloc[-1]
             
     except Exception as e:
         logger.error(f"An unexpected error occurred during analysis: {e}")
     return None, None
 
-# --- بقية الكود (scan_market, start, etc.) تبقى كما هي مع تعديل بسيط في الرسائل ---
+# --- وظائف البوت الرئيسية ---
 async def scan_market(context: ContextTypes.DEFAULT_TYPE):
     job_name = "Manual Scan" if context.job.name.startswith("scan_") else "Scheduled Scan"
-    logger.info(f"--- Starting {job_name} (Unfiltered) ---")
+    logger.info(f"--- Starting {job_name} (EMA Cross 15m) ---")
     chat_id = context.job.data['chat_id']
     if job_name == "Manual Scan":
-        await context.bot.send_message(chat_id=chat_id, text=f"⏳ جاري {job_name} للسوق (فريم 15 دقيقة، بدون فلتر)...")
+        await context.bot.send_message(chat_id=chat_id, text=f"⏳ جاري {job_name} للسوق (تقاطع EMA 7/99، فريم 15 دقيقة)...")
+    
     try:
         all_tickers = client.get_ticker()
+        # فلتر السعر يبقى كما هو
         symbols_to_scan = [t['symbol'] for t in all_tickers if t['symbol'].endswith('USDT') and float(t.get('lastPrice', 0)) < 100]
         logger.info(f"Found {len(symbols_to_scan)} symbols under $100 to analyze.")
     except Exception as e:
         logger.error(f"Failed to fetch tickers for filtering: {e}")
         return
+
     found_signals = 0
     for symbol in symbols_to_scan:
         klines = get_binance_klines(symbol)
         if not klines: continue
         df = pd.DataFrame(klines, columns=['timestamp','open','high','low','close','volume','close_time','quote_av','trades','tb_base_av','tb_quote_av','ignore'])
         df['close'] = pd.to_numeric(df['close'])
-        signal_type, signal_data = analyze_symbol_kdj(df)
+        
+        signal_type, signal_data = analyze_symbol_ema_cross(df)
+        
         if signal_type:
             found_signals += 1
             signal_emoji = "📈" if signal_type == 'BUY' else "📉"
-            action_text = "شراء" if signal_type == 'BUY' else "بيع"
-            message = (f"{signal_emoji} *[KDJ 15m - Unfiltered]* إشارة {action_text}!\n\n"
+            action_text = "تقاطع ذهبي (شراء)" if signal_type == 'BUY' else "تقاطع الموت (بيع)"
+            message = (f"{signal_emoji} *[EMA 7/99 Cross - 15m]*\n"
+                       f"إشارة **{action_text}**!\n\n"
                        f"• **العملة:** `{symbol}`\n"
                        f"• **السعر:** `{signal_data['close']:.5f}`\n\n"
                        f"• **السبب:**\n"
-                       f"  - خط J اخترق خطي K و D.")
+                       f"  - اخترق `EMA(7)` خط `EMA(99)`.\n"
+                       f"  - EMA(7): `{signal_data['EMA_7']:.5f}`\n"
+                       f"  - EMA(99): `{signal_data['EMA_99']:.5f}`")
             await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown')
         await asyncio.sleep(0.1)
+
     logger.info(f"--- {job_name} complete. Found {found_signals} signals. ---")
     if job_name == "Manual Scan":
         summary_message = f"✅ **اكتمل الفحص اليدوي.**\nتم تحليل {len(symbols_to_scan)} عملة. تم العثور على {found_signals} إشارة."
@@ -110,16 +115,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_message.chat_id
     await update.message.reply_html(f"👋 أهلاً بك يا {user.mention_html()}!\n\n"
-                                    f"أنا بوت **Falcon KDJ Sniper (v14.2 - Unfiltered)**.\n\n"
-                                    f"يقوم البوت الآن بالفحص التلقائي **كل 15 دقيقة** بدون فلتر EMA 200.")
-    current_jobs = context.job_queue.get_jobs_by_name("scheduled_scan")
+                                    f"أنا بوت **EMA Crossover (v1.0)**.\n\n"
+                                    f"أقوم بالبحث عن تقاطعات `EMA(7)` و `EMA(99)` على فريم **15 دقيقة**.\n"
+                                    f"سيتم إجراء فحص تلقائي كل 15 دقيقة.")
+    
+    # إزالة أي مهام قديمة بنفس الاسم لضمان عدم التكرار
+    current_jobs = context.job_queue.get_jobs_by_name("scheduled_scan_ema")
     for job in current_jobs:
         job.schedule_removal()
-    context.job_queue.run_repeating(scan_market, interval=900, first=10, data={'chat_id': chat_id}, name="scheduled_scan")
+        
+    # جدولة الفحص كل 15 دقيقة (900 ثانية)
+    context.job_queue.run_repeating(scan_market, interval=900, first=10, data={'chat_id': chat_id}, name="scheduled_scan_ema")
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_message.chat_id
-    context.job_queue.run_once(scan_market, 1, data={'chat_id': chat_id}, name=f"scan_{chat_id}")
+    context.job_queue.run_once(scan_market, 1, data={'chat_id': chat_id}, name=f"scan_ema_{chat_id}")
 
 def run_bot():
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -127,15 +137,17 @@ def run_bot():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("scan", scan_command))
+    
     job_data = {'chat_id': TELEGRAM_CHAT_ID}
-    application.job_queue.run_repeating(scan_market, interval=900, first=10, data=job_data, name="scheduled_scan")
-    logger.info("--- [Falcon KDJ Sniper v14.2] Bot is ready and running autonomously. ---")
+    application.job_queue.run_repeating(scan_market, interval=900, first=10, data=job_data, name="scheduled_scan_ema")
+    
+    logger.info("--- [EMA Crossover Bot v1.0] Bot is ready and running autonomously. ---")
     application.run_polling()
 
 if __name__ == "__main__":
-    logger.info("--- [Falcon KDJ Sniper v14.2] Starting Main Application ---")
+    logger.info("--- [EMA Crossover Bot v1.0] Starting Main Application ---")
     server_thread = Thread(target=run_server)
     server_thread.daemon = True
     server_thread.start()
-    logger.info("--- [Falcon KDJ Sniper v14.2] Web Server has been started. ---")
+    logger.info("--- [EMA Crossover Bot v1.0] Web Server has been started. ---")
     run_bot()
