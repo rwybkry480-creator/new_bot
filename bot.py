@@ -18,10 +18,9 @@ app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    return "Momentum Sniper Bot (v1.0 - 1h) is Live on Render!", 200
+    return "Breakout Strategy Bot (v1.0 - 1h) is Live on Render!", 200
 
 def run_server():
-    # Render يزودنا بالمنفذ عبر متغير البيئة PORT
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
@@ -39,43 +38,37 @@ def get_binance_klines(symbol, interval='1h', limit=100):
         logger.error(f"Error fetching klines for {symbol}: {e}")
         return None
 
-def analyze_momentum_strategy(df):
+def analyze_breakout_strategy(df):
     try:
-        # 1. حساب StochRSI
-        stoch_rsi = ta.stochrsi(df['close'], length=14, rsi_length=14, k=3, d=3)
-        df = pd.concat([df, stoch_rsi], axis=1)
-        
-        # 2. حساب SuperTrend (10, 3)
-        supertrend = ta.supertrend(df['high'], df['low'], df['close'], length=10, multiplier=3)
-        df = pd.concat([df, supertrend], axis=1)
-        
-        # 3. حساب RSI(6)
-        df['rsi_6'] = ta.rsi(df['close'], length=6)
-        
+        # حساب متوسط الحجم
+        df['volume_ma'] = ta.sma(df['vol'], length=20)
+
+        # حساب Pivot Points (مستويات دعم ومقاومة)
+        pivots = ta.pivot(df['high'], df['low'], df['close'])
+        df = pd.concat([df, pivots], axis=1)
+
         df.dropna(inplace=True)
         if df.empty: return None, None
 
         current = df.iloc[-1]
-        
-        # تسميات الأعمدة
-        stoch_k = 'STOCHRSIk_14_14_3_3'
-        st_direction = 'SUPERTd_10_3.0'
-        
-        # الشروط المطلوبة
-        if current[stoch_k] > 70 and current[st_direction] == 1 and current['rsi_6'] > 50:
+
+        # شروط الاختراق
+        if current['close'] > current['PIVOT'] and current['vol'] > current['volume_ma']:
             return 'BUY', current
-            
+        elif current['close'] < current['PIVOT'] and current['vol'] > current['volume_ma']:
+            return 'SELL', current
+
     except Exception as e:
-        logger.error(f"Analysis error: {e}")
+        logger.error(f"Breakout Strategy error: {e}")
     return None, None
 
 async def scan_market(context: ContextTypes.DEFAULT_TYPE):
     job_name = "Manual Scan" if context.job.name.startswith("scan_") else "Scheduled Scan"
     chat_id = context.job.data['chat_id']
-    
+
     if job_name == "Manual Scan":
-        await context.bot.send_message(chat_id=chat_id, text="⏳ جاري فحص السوق (قناص الزخم - 1ساعة)...")
-    
+        await context.bot.send_message(chat_id=chat_id, text="⏳ جاري فحص السوق (استراتيجية الاختراق - 1ساعة)...")
+
     try:
         all_tickers = client.get_ticker()
         symbols = [t['symbol'] for t in all_tickers if t['symbol'].endswith('USDT') and float(t.get('lastPrice', 0)) < 100]
@@ -87,22 +80,35 @@ async def scan_market(context: ContextTypes.DEFAULT_TYPE):
     for symbol in symbols[:150]:
         klines = get_binance_klines(symbol)
         if not klines: continue
-        
+
         df = pd.DataFrame(klines, columns=['ts','open','high','low','close','vol','ct','qav','tr','tbba','tbqa','ig'])
         df['close'] = pd.to_numeric(df['close'])
         df['high'] = pd.to_numeric(df['high'])
         df['low'] = pd.to_numeric(df['low'])
-        
-        signal_type, data = analyze_momentum_strategy(df)
-        
+        df['vol'] = pd.to_numeric(df['vol'])
+
+        signal_type, data = analyze_breakout_strategy(df)
+
         if signal_type == 'BUY':
             found_signals += 1
-            msg = (f"🚀 **إشارة قناص الزخم (1ساعة)**\n\n"
+            msg = (f"🚀 **إشارة شراء (اختراق)**\n\n"
                    f"• العملة: `{symbol}`\n"
                    f"• السعر: `{data['close']:.5f}`\n"
-                   f"• StochRSI: `{data['STOCHRSIk_14_14_3_3']:.2f}`\n"
-                   f"• الحالة: **زخم صاعد مؤكد** ✅")
+                   f"• Pivot: `{data['PIVOT']:.5f}`\n"
+                   f"• الحجم الحالي: `{data['vol']:.2f}`\n"
+                   f"• الحالة: **اختراق مقاومة مع سيولة قوية** ✅")
             await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
+
+        elif signal_type == 'SELL':
+            found_signals += 1
+            msg = (f"⚠️ **إشارة بيع (اختراق)**\n\n"
+                   f"• العملة: `{symbol}`\n"
+                   f"• السعر: `{data['close']:.5f}`\n"
+                   f"• Pivot: `{data['PIVOT']:.5f}`\n"
+                   f"• الحجم الحالي: `{data['vol']:.2f}`\n"
+                   f"• الحالة: **كسر دعم مع سيولة قوية** ❌")
+            await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
+
         await asyncio.sleep(0.1)
 
     if job_name == "Manual Scan":
@@ -110,8 +116,8 @@ async def scan_market(context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    await update.message.reply_text("مرحباً! بوت قناص الزخم (1h) يعمل الآن على Render.\nاستخدم /scan للفحص اليدوي.")
-    
+    await update.message.reply_text("مرحباً! بوت استراتيجية الاختراق (1h) يعمل الآن على Render.\nاستخدم /scan للفحص اليدوي.")
+
     for job in context.job_queue.get_jobs_by_name("auto_scan"):
         job.schedule_removal()
     context.job_queue.run_repeating(scan_market, interval=3600, first=10, data={'chat_id': chat_id}, name="auto_scan")
@@ -125,18 +131,15 @@ def run_bot():
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("scan", scan_cmd))
-    
+
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if chat_id:
         application.job_queue.run_repeating(scan_market, interval=3600, first=10, data={'chat_id': chat_id}, name="auto_scan")
-    
+
     application.run_polling()
 
 if __name__ == "__main__":
-    # تشغيل خادم الويب في خيط منفصل لـ Render
     server_thread = Thread(target=run_server)
     server_thread.daemon = True
     server_thread.start()
-    
-    # تشغيل البوت
     run_bot()
