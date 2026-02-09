@@ -18,7 +18,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    return "Breakout Strategy Bot (v1.0 - 1h) is Live on Render!", 200
+    return "Breakout Strategy Bot (v2.0 - 1h) is Live on Render!", 200
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))
@@ -40,24 +40,23 @@ def get_binance_klines(symbol, interval='1h', limit=100):
 
 def analyze_breakout_strategy(df):
     try:
-        # حساب متوسط الحجم
+        # حساب المؤشرات
         df['volume_ma'] = ta.sma(df['vol'], length=20)
-
-        # حساب متوسطات متحركة للسعر
         df['ma20'] = ta.sma(df['close'], length=20)
         df['ma50'] = ta.sma(df['close'], length=50)
+        df['rsi_14'] = ta.rsi(df['close'], length=14)
 
         df.dropna(inplace=True)
         if df.empty: return None, None
 
         current = df.iloc[-1]
 
-        # شروط شراء: السعر فوق MA20 و MA50 مع حجم تداول قوي
-        if current['close'] > current['ma20'] and current['close'] > current['ma50'] and current['vol'] > current['volume_ma']:
+        # شراء: السعر فوق MA20 و MA50 + حجم قوي + RSI > 55
+        if current['close'] > current['ma20'] and current['close'] > current['ma50'] and current['vol'] > current['volume_ma'] and current['rsi_14'] > 55:
             return 'BUY', current
 
-        # شروط بيع: السعر تحت MA20 و MA50 مع حجم تداول قوي
-        elif current['close'] < current['ma20'] and current['close'] < current['ma50'] and current['vol'] > current['volume_ma']:
+        # بيع: السعر تحت MA20 و MA50 + حجم قوي + RSI < 45
+        elif current['close'] < current['ma20'] and current['close'] < current['ma50'] and current['vol'] > current['volume_ma'] and current['rsi_14'] < 45:
             return 'SELL', current
 
     except Exception as e:
@@ -79,7 +78,7 @@ async def scan_market(context: ContextTypes.DEFAULT_TYPE):
         return
 
     found_signals = 0
-    for symbol in symbols[:150]:
+    for symbol in symbols[:50]:  # تقليل عدد العملات الممسوحة إلى 50 فقط
         klines = get_binance_klines(symbol)
         if not klines: continue
 
@@ -93,20 +92,22 @@ async def scan_market(context: ContextTypes.DEFAULT_TYPE):
 
         if signal_type == 'BUY':
             found_signals += 1
-            msg = (f"🚀 **إشارة شراء (اختراق)**\n\n"
+            msg = (f"🚀 **إشارة شراء (اختراق + RSI)**\n\n"
                    f"• العملة: `{symbol}`\n"
                    f"• السعر: `{data['close']:.5f}`\n"
                    f"• MA20: `{data['ma20']:.5f}` | MA50: `{data['ma50']:.5f}`\n"
+                   f"• RSI14: `{data['rsi_14']:.2f}`\n"
                    f"• الحجم الحالي: `{data['vol']:.2f}`\n"
                    f"• الحالة: **اختراق صاعد مع سيولة قوية** ✅")
             await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
 
         elif signal_type == 'SELL':
             found_signals += 1
-            msg = (f"⚠️ **إشارة بيع (اختراق)**\n\n"
+            msg = (f"⚠️ **إشارة بيع (اختراق + RSI)**\n\n"
                    f"• العملة: `{symbol}`\n"
                    f"• السعر: `{data['close']:.5f}`\n"
                    f"• MA20: `{data['ma20']:.5f}` | MA50: `{data['ma50']:.5f}`\n"
+                   f"• RSI14: `{data['rsi_14']:.2f}`\n"
                    f"• الحجم الحالي: `{data['vol']:.2f}`\n"
                    f"• الحالة: **اختراق هابط مع سيولة قوية** ❌")
             await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
